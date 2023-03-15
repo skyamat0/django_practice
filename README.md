@@ -419,6 +419,206 @@ Password (again): *********
 `python manage.py runserver`を実行
 
 admin.pyに以下を追記.
+```python
+from .models import Question
+
+admin.site.register(Question)
 ```
 
+
+## 再びviewへ
+`polls/view.py`
+に以下を記述
+```python
+def detail(request, question_id):
+    return HttpResponse("You're looking at question %s." % question_id)
+
+def results(request, question_id):
+    response = "You're looking at the results of question %s."
+    return HttpResponse(response % question_id)
+
+def vote(request, question_id):
+    return HttpResponse("You're voting on question %s." % question_id)
 ```
+
+viewの設定をしたら、pathとviewを結びつけます。
+
+`urls.py`に以下を記述します。
+```python
+from . import views
+
+urlpatterns = [
+    # ex: /polls/
+    path('', views.index, name='index'),
+    # ex: /polls/5/
+    path('<int:question_id>/', views.detail, name='detail'),
+    # ex: /polls/5/results/
+    path('<int:question_id>/results/', views.results, name='results'),
+    # ex: /polls/5/vote/
+    path('<int:question_id>/vote/', views.vote, name='vote'),
+]
+```
+
+`'<int:question_id>/vote/'`はなにを表ているのでしょう？
+
+これは、例えば`/polls/5/vote/`にHTTPリクエストがあった場合にそれを、`request=<HttpRequest object>`として`views.vote`に渡します。すなわち、以下のように実行されます。
+```python
+vote(request=<HttpRequest object>, question_id=5)
+```
+
+Djangoでは、`view`に直接HTMLのページデザインを記述することは非推奨です。これは、ページの外観を変更するためにPythonのコードを直接編集する必要があり、作業が複雑になる可能性があるからです。
+そのため、`view`にはPythonのロジックのみを記述し、実際のHTMLのデザインにはテンプレートを使用します。
+これにより、変更作業が用意になり、保守性が向上します。
+（どうやって切り分ける？ロジックを具体化する必要）
+
+これを確かめるために、一度以下のように`view.py`を変更します。
+
+```python
+
+def index(request):
+    latest_question_list = Question.objects.order_by('-pub_date')[:5]
+    output = ', '.join([q.question_text for q in latest_question_list])
+    return HttpResponse(output)
+```
+
+これができたら、一度実行しましょう。
+
+`python manage.py runserver`
+
+また、次に
+
+`polls/templates/polls/index.html`
+
+を作成し、その中に以下を記述します。
+
+```html
+{% if latest_question_list %}
+    <ul>
+    {% for question in latest_question_list %}
+        <li><a href="/polls/{{ question.id }}/">{{ question.question_text }}</a></li>
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>No polls are available.</p>
+{% endif %}
+```
+なお、templateについては[こちら](https://developer.mozilla.org/en-US/docs/Learn/HTML/Introduction_to_HTML/Getting_started#anatomy_of_an_html_document)
+を参照
+
+そして、viewからtemplateを呼び出すように書き換えます。
+
+```python
+from django.template import loader
+
+def index(request):
+    latest_question_list = Question.objects.order_by('-pub_date')[:5]
+    template = loader.get_template('polls/index.html')
+    context = {
+        'latest_question_list': latest_question_list,
+    }
+    return HttpResponse(template.render(context, request))
+```
+
+`render()`を用いて書き換えることもできます。
+これはdjangoが提供するショートカットで、HttpResponseクラスは、与えられたテンプレートから、レンダリングされたページをHttpResponseとして返しますが、それをショートカットとして`render()`で実行できます。
+
+```python
+from django.shortcuts import render
+
+from .models import Question
+
+
+def index(request):
+    latest_question_list = Question.objects.order_by('-pub_date')[:5]
+    context = {'latest_question_list': latest_question_list}
+    return render(request, 'polls/index.html', context)
+```
+
+### 404エラーを吐く
+`view.py`を次のように書き換えます。
+
+```python
+from django.http import Http404
+from django.shortcuts import render
+
+from .models import Question
+# ...
+def detail(request, question_id):
+    try:
+        question = Question.objects.get(pk=question_id)
+    except Question.DoesNotExist:
+        raise Http404("Question does not exist")
+    return render(request, 'polls/detail.html', {'question': question})
+```
+
+IDが存在しない場合に404エラーを吐くしようです。
+
+`polls/templates/polls/detail.html`
+に以下を追記します。
+
+```
+{{ question }}
+```
+
+`render()`同様に、ショートカットも存在する。
+
+```python
+from django.shortcuts import get_object_or_404, render
+
+from .models import Question
+# ...
+def detail(request, question_id):
+    question = get_object_or_404(Question, pk=question_id)
+    return render(request, 'polls/detail.html', {'question': question})
+```
+
+## テンプレートについて
+`polls/templates/polls/detail.html`
+```html
+<h1>{{ question.question_text }}</h1>
+<ul>
+{% for choice in question.choice_set.all %}
+    <li>{{ choice.choice_text }}</li>
+{% endfor %}
+</ul>
+```
+
+`{{ question.question_text }}`<-variable
+
+`{% for %}`<- for loop
+
+`{% url %}`
+
+`url`については
+```html
+<li><a href="/polls/{{ question.id }}/">{{ question.question_text }}</a></li>
+```
+と書くこともできるが、urlの変更があった際に、テンプレートの書き換えが大変になってしまう。
+そこで、`{% url %}`を用いて、次のように書くことができる。
+
+```html
+<li><a href="{% url 'detail' question.id %}">{{ question.question_text }}</a></li>
+```
+
+これをすると、`$APPS.urls.py`に記述された`path()`に基づいて記述することができる。
+
+それは、次のように書かれている場合である。
+
+```python
+# the 'name' value as called by the {% url %} template tag
+path('<int:question_id>/', views.detail, name='detail'),
+```
+
+他のテンプレートについては下記を参照。[template guides](https://docs.djangoproject.com/en/4.1/topics/templates/)
+
+実際のプロジェクトでは複数のAppが存在するため、名前空間を明示してあげることで、混在することを防ぐことができる。
+
+```html
+<li><a href="{% url 'detail' question.id %}">{{ question.question_text }}</a></li>
+```
+を
+```html
+<li><a href="{% url 'polls:detail' question.id %}">{{ question.question_text }}</a></li>
+```
+
+のように`detail`を`polls:detail`にすることで、混在を防げる。
